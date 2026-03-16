@@ -12,6 +12,10 @@ import adsk.core
 
 from .texttable import Texttable
 from .cutlist import CutList, CutListItem
+from .utils import (
+    WASTE_FACTOR, is_imperial, board_feet, volume_cm3,
+    material_summary, format_material_summary,
+)
 
 
 @dataclass
@@ -101,20 +105,42 @@ class JSONFormat(Format):
 
     def item_to_dict(self, item: CutListItem):
         include_material = self.options.include_material
+        dims = item.dimensions
+        if is_imperial(self.units):
+            bf_entry = {'board_feet': round(board_feet(dims.length, dims.width, dims.height), 4)}
+        else:
+            bf_entry = {'volume_cm3': round(volume_cm3(dims.length, dims.width, dims.height), 4)}
         return {
             'count': item.count,
             'dimensions': {
                 'units': self.units,
-                'length': self.format_value(item.dimensions.length),
-                'width': self.format_value(item.dimensions.width),
-                'height': self.format_value(item.dimensions.height),
+                'length': self.format_value(dims.length),
+                'width': self.format_value(dims.width),
+                'height': self.format_value(dims.height),
             },
+            **bf_entry,
             **({'material': item.material} if include_material else {}),
             'names': self.format_item_names(item),
         }
 
     def format(self, cutlist: CutList):
-        return json.dumps([self.item_to_dict(item) for item in cutlist.sorted_items()], indent=2)
+        items = cutlist.sorted_items()
+        rows = material_summary(items, self.units)
+        summary = []
+        for row in rows:
+            entry = {
+                'material': row['material'],
+                'count': row['count'],
+                'unit_label': row['unit_label'],
+                'value': round(row['value'], 4),
+            }
+            if is_imperial(self.units):
+                entry['buy'] = round(row['buy'], 4)
+            summary.append(entry)
+        return json.dumps({
+            'items': [self.item_to_dict(item) for item in items],
+            'material_summary': summary,
+        }, indent=2)
 
 
 class CSVDictBuilder:
@@ -138,41 +164,70 @@ class CSVFormat(Format):
     filefilter = FileFilter('CSV Files', 'csv')
 
     dialect = 'excel'
+    include_board_feet = True
 
     @property
     def fieldnames(self):
         include_material = self.options.include_material
         lengthkey, widthkey, heightkey = [f'{v} ({self.units})' for v in ['length', 'width', 'height']]
+        bf_key = 'board_ft' if is_imperial(self.units) else 'vol_cm3'
         return [
             'count',
             *(['material'] if include_material else []),
             lengthkey,
             widthkey,
             heightkey,
-            'names'
+            bf_key,
+            'names',
         ]
 
     def item_to_dict(self, item: CutListItem):
         d = CSVDictBuilder(self.fieldnames)
+        dims = item.dimensions
 
         d.set_field(item.count)
 
         if self.options.include_material:
             d.set_field(item.material)
 
-        d.set_field(self.format_value(item.dimensions.length))
-        d.set_field(self.format_value(item.dimensions.width))
-        d.set_field(self.format_value(item.dimensions.height))
+        d.set_field(self.format_value(dims.length))
+        d.set_field(self.format_value(dims.width))
+        d.set_field(self.format_value(dims.height))
+
+        if is_imperial(self.units):
+            d.set_field(f'{board_feet(dims.length, dims.width, dims.height):.2f}')
+        else:
+            d.set_field(f'{volume_cm3(dims.length, dims.width, dims.height):.1f}')
+
         d.set_field(','.join(self.format_item_names(item)))
 
         return d.build()
 
-
     def format(self, cutlist: CutList):
+        items = cutlist.sorted_items()
         with io.StringIO(newline='') as f:
             w = csv.DictWriter(f, dialect=self.dialect, fieldnames=self.fieldnames)
             w.writeheader()
-            w.writerows([self.item_to_dict(item) for item in cutlist.sorted_items()])
+            w.writerows([self.item_to_dict(item) for item in items])
+
+            if self.include_board_feet:
+                rows = material_summary(items, self.units)
+                if rows:
+                    f.write('\n')
+                    imperial = is_imperial(self.units)
+                    summary_fields = (['material', 'count', 'board_ft', 'buy_bf']
+                                      if imperial else ['material', 'count', 'vol_cm3'])
+                    sw = csv.DictWriter(f, dialect=self.dialect, fieldnames=summary_fields)
+                    sw.writeheader()
+                    for row in rows:
+                        r = {'material': row['material'], 'count': row['count']}
+                        if imperial:
+                            r['board_ft'] = f"{row['value']:.2f}"
+                            r['buy_bf'] = f"{row['buy']:.2f}"
+                        else:
+                            r['vol_cm3'] = f"{row['value']:.1f}"
+                        sw.writerow(r)
+
             return f.getvalue()
 
 
@@ -182,6 +237,7 @@ class CutlistOptimizerFormat(CSVFormat):
     '''
 
     name = 'Cutlist Optimizer'
+    include_board_feet = False
 
     @property
     def fieldnames(self):
@@ -222,6 +278,7 @@ class CutlistEvoFormat(CSVFormat):
     '''
 
     name = 'Cutlist Evo'
+    include_board_feet = False
     filefilter = FileFilter('Text Files', 'txt')
 
     dialect = 'excel-tab'
@@ -265,36 +322,48 @@ class TableFormat(Format):
     def fieldnames(self):
         include_material = self.options.include_material
         lengthkey, widthkey, heightkey = [f'{v} ({self.units})' for v in ['length', 'width', 'height']]
+        bf_key = 'board ft' if is_imperial(self.units) else 'vol (cm\u00b3)'
         return [
             'count',
             *(['material'] if include_material else []),
             lengthkey,
             widthkey,
             heightkey,
+            bf_key,
             'names',
         ]
 
     def item_to_row(self, item: CutListItem):
         include_material = self.options.include_material
+        dims = item.dimensions
+        if is_imperial(self.units):
+            bf_val = f'{board_feet(dims.length, dims.width, dims.height):.2f}'
+        else:
+            bf_val = f'{volume_cm3(dims.length, dims.width, dims.height):.1f}'
         return [
             item.count,
             *([item.material] if include_material else []),
-            self.format_value(item.dimensions.length),
-            self.format_value(item.dimensions.width),
-            self.format_value(item.dimensions.height),
+            self.format_value(dims.length),
+            self.format_value(dims.width),
+            self.format_value(dims.height),
+            bf_val,
             '\n'.join(self.format_item_names(item)),
         ]
 
     def format(self, cutlist: CutList):
         include_material = self.options.include_material
+        items = cutlist.sorted_items()
 
         tt = Texttable(max_width=0)
         tt.set_deco(Texttable.HEADER | Texttable.HLINES)
         tt.header(self.fieldnames)
-        tt.set_cols_dtype(['i', *(['t'] if include_material else []), 't', 't', 't', 't'])
-        tt.set_cols_align(['r', *(['l'] if include_material else []), 'r', 'r', 'r', 'l'])
-        tt.add_rows([self.item_to_row(item) for item in cutlist.sorted_items()], header=False)
-        return tt.draw()
+        tt.set_cols_dtype(['i', *(['t'] if include_material else []), 't', 't', 't', 't', 't'])
+        tt.set_cols_align(['r', *(['l'] if include_material else []), 'r', 'r', 'r', 'r', 'l'])
+        tt.add_rows([self.item_to_row(item) for item in items], header=False)
+
+        table = tt.draw()
+        summary = format_material_summary(items, self.units)
+        return f'{table}\n\n{summary}'
 
 
 class HTMLFormat(Format):
@@ -305,31 +374,68 @@ class HTMLFormat(Format):
     def fieldnames(self):
         include_material = self.options.include_material
         lengthkey, widthkey, heightkey = [f'{v} ({self.units})' for v in ['Length', 'Width', 'Height']]
+        bf_key = 'Board ft' if is_imperial(self.units) else 'Vol (cm\u00b3)'
         return [
             'Count',
             lengthkey,
             widthkey,
             heightkey,
+            bf_key,
             *(['Material'] if include_material else []),
             'Names',
         ]
 
     def item_to_row(self, item: CutListItem):
         include_material = self.options.include_material
+        dims = item.dimensions
+        if is_imperial(self.units):
+            bf_val = f'{board_feet(dims.length, dims.width, dims.height):.2f}'
+        else:
+            bf_val = f'{volume_cm3(dims.length, dims.width, dims.height):.1f}'
         cols = [
             item.count,
-            self.format_value(item.dimensions.length),
-            self.format_value(item.dimensions.width),
-            self.format_value(item.dimensions.height),
+            self.format_value(dims.length),
+            self.format_value(dims.width),
+            self.format_value(dims.height),
+            bf_val,
             *([html.escape(item.material)] if include_material else []),
             '<br>'.join(html.escape(n) for n in self.format_item_names(item)),
         ]
         return '<tr>' + ''.join(f'<td>{c}</td>' for c in cols) + '</tr>'
 
+    def _material_summary_html(self, items) -> str:
+        """Render the material summary as an HTML section."""
+        rows = material_summary(items, self.units)
+        if not rows:
+            return ''
+
+        imperial = is_imperial(self.units)
+        pct = int(WASTE_FACTOR * 100)
+
+        if imperial:
+            header = '<tr><th>Material</th><th>Pcs</th><th>Board ft</th><th>Buy (with waste)</th></tr>'
+        else:
+            header = '<tr><th>Material</th><th>Pcs</th><th>Vol (cm\u00b3)</th></tr>'
+
+        tr_rows = []
+        for row in rows:
+            mat = html.escape(row['material'])
+            val = f"{row['value']:.2f}" if imperial else f"{row['value']:.1f}"
+            if imperial:
+                buy = f"~{row['buy']:.2f} bf ({pct}% waste)"
+                tr_rows.append(f'<tr><td>{mat}</td><td>{row["count"]}</td><td>{val}</td><td>{buy}</td></tr>')
+            else:
+                tr_rows.append(f'<tr><td>{mat}</td><td>{row["count"]}</td><td>{val}</td></tr>')
+
+        trs = ''.join(tr_rows)
+        return f'<h2>Material Summary</h2><table><thead>{header}</thead><tbody>{trs}</tbody></table>'
+
     def format(self, cutlist: CutList):
+        items = cutlist.sorted_items()
         title = html.escape(self.docname)
         header = ''.join(f'<th>{html.escape(h)}</th>' for h in self.fieldnames)
-        rows = ''.join(self.item_to_row(item) for item in cutlist.sorted_items())
+        rows = ''.join(self.item_to_row(item) for item in items)
+        summary_html = self._material_summary_html(items)
 
         return textwrap.dedent(f'''\
             <html>
@@ -354,6 +460,7 @@ class HTMLFormat(Format):
                     <thead>{header}</thead>
                     <tbody>{rows}</tbody>
                 </table>
+                {summary_html}
             </body>
         ''')
 
