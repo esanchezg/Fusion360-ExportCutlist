@@ -3,7 +3,7 @@
 from collections import defaultdict
 
 # Fusion 360 stores dimensions in centimeters internally.
-_CM_TO_IN = 0.393701
+CM_TO_IN = 0.393701
 
 # Default waste factor for buy-quantity calculation (10%).
 WASTE_FACTOR = 0.10
@@ -19,9 +19,9 @@ def is_imperial(units: str) -> bool:
 
 def board_feet(length_cm: float, width_cm: float, height_cm: float) -> float:
     """Return board feet for a single part whose dimensions are in centimeters."""
-    l = length_cm * _CM_TO_IN
-    w = width_cm * _CM_TO_IN
-    h = height_cm * _CM_TO_IN
+    l = length_cm * CM_TO_IN
+    w = width_cm * CM_TO_IN
+    h = height_cm * CM_TO_IN
     return (l * w * h) / 144.0
 
 

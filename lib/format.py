@@ -13,7 +13,7 @@ import adsk.core
 from .texttable import Texttable
 from .cutlist import CutList, CutListItem
 from .utils import (
-    WASTE_FACTOR, is_imperial, board_feet, volume_cm3,
+    CM_TO_IN, WASTE_FACTOR, is_imperial, board_feet, volume_cm3,
     material_summary, format_material_summary,
 )
 
@@ -31,6 +31,9 @@ class FormatOptions:
       include_material         include material in the output if the format supports it
       name_separator           the separator to use when joining name elements
       units                    the units to use for dimensions
+      stock_lengths            comma-separated stock lengths in inches; empty = skip optimizer
+      kerf_in                  saw blade kerf in inches
+      min_offcut_in            minimum off-cut length in inches to treat as usable
     """
     component_names: bool = False
     short_names: bool = False
@@ -39,6 +42,9 @@ class FormatOptions:
     include_material: bool = True
     name_separator: str = '/'
     units: str = 'auto'
+    stock_lengths: str = ''
+    kerf_in: float = 0.125
+    min_offcut_in: float = 12.0
 
 
 class FileFilter:
@@ -95,6 +101,44 @@ class Format:
 
         return sorted(names)
 
+    def _run_optimizer(self, items):
+        """
+        Expand items into a flat list of lumber lengths (inches) and run FFD.
+
+        Sheet goods (height <= 0.75 in) are skipped. Returns a Plan, or None
+        if stock_lengths is not configured or no lumber parts exist.
+        """
+        from .optimizer import (parse_stock_lengths, optimize,
+                                 SHEET_GOODS_MAX_HEIGHT_IN)
+        stock_lengths = parse_stock_lengths(self.options.stock_lengths)
+        if not stock_lengths:
+            return None
+
+        parts = []
+        skipped = False
+        for item in items:
+            if item.dimensions.height * CM_TO_IN <= SHEET_GOODS_MAX_HEIGHT_IN:
+                skipped = True
+                continue
+            length_in = item.dimensions.length * CM_TO_IN
+            parts.extend([length_in] * item.count)
+
+        if not parts:
+            return None
+
+        plan = optimize(parts, stock_lengths,
+                        self.options.kerf_in, self.options.min_offcut_in)
+        plan.sheet_goods_skipped = skipped
+        return plan
+
+    def format_cutplan(self, cutlist: CutList):
+        """
+        Return a separate cut-plan string for formats that write a second file.
+
+        Returns None by default; CSV and JSON override this.
+        """
+        return None
+
     def format(self, cutlist: CutList):
         raise NotImplementedError
 
@@ -141,6 +185,14 @@ class JSONFormat(Format):
             'items': [self.item_to_dict(item) for item in items],
             'material_summary': summary,
         }, indent=2)
+
+    def format_cutplan(self, cutlist: CutList):
+        """Return a JSON cut-plan string, or None if the optimizer is not configured."""
+        from .optimizer import format_plan_json
+        plan = self._run_optimizer(cutlist.sorted_items())
+        if plan is None:
+            return None
+        return format_plan_json(plan)
 
 
 class CSVDictBuilder:
@@ -229,6 +281,14 @@ class CSVFormat(Format):
                         sw.writerow(r)
 
             return f.getvalue()
+
+    def format_cutplan(self, cutlist: CutList):
+        """Return a CSV cut-plan string, or None if the optimizer is not configured."""
+        from .optimizer import format_plan_csv
+        plan = self._run_optimizer(cutlist.sorted_items())
+        if plan is None:
+            return None
+        return format_plan_csv(plan)
 
 
 class CutlistOptimizerFormat(CSVFormat):
@@ -351,6 +411,7 @@ class TableFormat(Format):
         ]
 
     def format(self, cutlist: CutList):
+        from .optimizer import format_plan_text
         include_material = self.options.include_material
         items = cutlist.sorted_items()
 
@@ -361,9 +422,14 @@ class TableFormat(Format):
         tt.set_cols_align(['r', *(['l'] if include_material else []), 'r', 'r', 'r', 'r', 'l'])
         tt.add_rows([self.item_to_row(item) for item in items], header=False)
 
-        table = tt.draw()
-        summary = format_material_summary(items, self.units)
-        return f'{table}\n\n{summary}'
+        output = tt.draw()
+        output += '\n\n' + format_material_summary(items, self.units)
+
+        plan = self._run_optimizer(items)
+        if plan is not None:
+            output += '\n\n' + format_plan_text(plan)
+
+        return output
 
 
 class HTMLFormat(Format):
@@ -431,11 +497,15 @@ class HTMLFormat(Format):
         return f'<h2>Material Summary</h2><table><thead>{header}</thead><tbody>{trs}</tbody></table>'
 
     def format(self, cutlist: CutList):
+        from .optimizer import format_plan_html
         items = cutlist.sorted_items()
         title = html.escape(self.docname)
         header = ''.join(f'<th>{html.escape(h)}</th>' for h in self.fieldnames)
         rows = ''.join(self.item_to_row(item) for item in items)
         summary_html = self._material_summary_html(items)
+
+        plan = self._run_optimizer(items)
+        cutplan_html = format_plan_html(plan) if plan is not None else ''
 
         return textwrap.dedent(f'''\
             <html>
@@ -461,6 +531,7 @@ class HTMLFormat(Format):
                     <tbody>{rows}</tbody>
                 </table>
                 {summary_html}
+                {cutplan_html}
             </body>
         ''')
 

@@ -10,6 +10,7 @@
 
 import functools
 import io
+import os
 import traceback
 
 from dataclasses import dataclass, field
@@ -19,6 +20,7 @@ import adsk.fusion
 
 from .lib.format import ALL_FORMATS, FormatOptions, TableFormat, CSVFormat, get_format
 from .lib.cutlist import GroupBy, CutList, CutListOptions
+from .lib.utils import CM_TO_IN
 
 
 COMMAND_ID = 'ExportCutlistCommand'
@@ -142,6 +144,24 @@ class CutlistCommandCreatedEventHandler(adsk.core.CommandCreatedEventHandler):
         tolerance_input = advanced_group.children.addValueInput('tolerance', 'Tolerance', 'mm', adsk.core.ValueInput.createByReal(user_options.cutlist_options.tolerance))
         tolerance_input.tooltip = 'The tolerance used when matching bounding box dimensions.'
 
+        optimizer_group = inputs.addGroupCommandInput('optimizer_group', 'Cut Optimization')
+        optimizer_group.isEnabledCheckBoxDisplayed = False
+        optimizer_group.isExpanded = True
+
+        stock_lengths_input = optimizer_group.children.addStringValueInput('stock_lengths', 'Stock lengths (in)', user_options.format_options.stock_lengths)
+        stock_lengths_input.tooltip = 'Comma-separated list of available stock lengths in inches.'
+        stock_lengths_input.tooltipDescription = 'Example: 96, 120, 144. Leave blank to skip cut optimization.'
+
+        kerf_input = optimizer_group.children.addValueInput(
+            'kerf', 'Kerf width', 'in',
+            adsk.core.ValueInput.createByReal(user_options.format_options.kerf_in / CM_TO_IN))
+        kerf_input.tooltip = 'Saw blade kerf deducted per cut.'
+
+        min_offcut_input = optimizer_group.children.addValueInput(
+            'min_offcut', 'Min off-cut', 'in',
+            adsk.core.ValueInput.createByReal(user_options.format_options.min_offcut_in / CM_TO_IN))
+        min_offcut_input.tooltip = 'Off-cuts shorter than this are counted as waste.'
+
         execute_handler = CutlistCommandExecuteHandler()
         cmd.execute.add(execute_handler)
         handlers.append(execute_handler)
@@ -198,7 +218,17 @@ class CutlistCommandExecuteHandler(adsk.core.CommandEventHandler):
         with io.open(filename, 'w', newline=newline, encoding='utf-8') as f:
             f.write(fmt.format(cutlist))
 
-        ui.messageBox(f'Export complete: {filename}', COMMAND_NAME)
+        cutplan = fmt.format_cutplan(cutlist)
+        if cutplan is not None:
+            base, ext = os.path.splitext(filename)
+            cutplan_filename = f'{base}_cutplan{ext}'
+            with io.open(cutplan_filename, 'w', newline=newline, encoding='utf-8') as f:
+                f.write(cutplan)
+            ui.messageBox(
+                f'Export complete: {filename}\nCut plan: {cutplan_filename}',
+                COMMAND_NAME)
+        else:
+            ui.messageBox(f'Export complete: {filename}', COMMAND_NAME)
 
 
 def set_options_from_inputs(inputs: adsk.core.CommandInputs):
@@ -220,6 +250,10 @@ def set_options_from_inputs(inputs: adsk.core.CommandInputs):
     axis_aligned_input: adsk.core.BoolValueCommandInput = inputs.itemById('axisaligned')
     tolerance_input: adsk.core.ValueCommandInput = inputs.itemById('tolerance')
 
+    stock_lengths_input: adsk.core.StringValueCommandInput = inputs.itemById('stock_lengths')
+    kerf_input: adsk.core.ValueCommandInput = inputs.itemById('kerf')
+    min_offcut_input: adsk.core.ValueCommandInput = inputs.itemById('min_offcut')
+
     user_options.cutlist_options.ignore_hidden = hidden_input.value
     user_options.cutlist_options.ignore_external = external_input.value
     user_options.cutlist_options.group_by = group_by
@@ -233,6 +267,9 @@ def set_options_from_inputs(inputs: adsk.core.CommandInputs):
     user_options.format_options.remove_numeric_suffixes = remove_numeric_input.value
     user_options.format_options.include_material = include_material_input.value
     user_options.format_options.units = unit_input.selectedItem.name
+    user_options.format_options.stock_lengths = stock_lengths_input.value
+    user_options.format_options.kerf_in = kerf_input.value * CM_TO_IN
+    user_options.format_options.min_offcut_in = min_offcut_input.value * CM_TO_IN
 
 
 @report_errors
