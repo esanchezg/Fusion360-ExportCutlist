@@ -23,8 +23,8 @@ from .lib.cutlist import GroupBy, CutList, CutListOptions
 from .lib.utils import CM_TO_IN
 
 
-COMMAND_ID = 'ExportCutlistCommand'
-COMMAND_NAME = 'Export Cutlist'
+COMMAND_ID = 'SuperCutListCommand'
+COMMAND_NAME = 'SuperCutList'
 
 DEFAULT_TOLERANCE = 1e-04
 DEFAULT_GROUPBY = GroupBy(dimensions=True, material=True)

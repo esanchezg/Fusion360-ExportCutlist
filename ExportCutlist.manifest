@@ -3,10 +3,10 @@
   "type": "addin",
   "author": "Billy Keyes",
   "description": {
-    "": "Export a cutlist file containing bodies of selected components"
+    "": "Export a cutlist with board feet, material summary, and cut optimization"
   },
   "supportedOS": "windows|mac",
   "editEnabled": true,
-  "version": "v0.6.1",
+  "version": "v0.7.0",
   "runOnStartup": true
 }
