@@ -46,6 +46,7 @@ class FormatOptions:
     kerf_in: float = 0.125
     min_offcut_in: float = 12.0
     sheet_size: str = ''
+    respect_grain: bool = False
 
 
 class FileFilter:
@@ -151,11 +152,14 @@ class Format:
                 continue
             l_in = item.dimensions.length * CM_TO_IN
             w_in = item.dimensions.width * CM_TO_IN
-            label = f'{l_in:.1f}x{w_in:.1f}'
+            names = self.format_item_names(item)
+            label = names[0] if names else f'{l_in:.1f}x{w_in:.1f}'
             parts.extend([(l_in, w_in, label)] * item.count)
         if not parts:
             return None
-        return optimize_sheets(parts, sheet_width, sheet_height)
+        allow_rotation = not self.options.respect_grain
+        return optimize_sheets(parts, sheet_width, sheet_height,
+                               allow_rotation=allow_rotation)
 
     def format_cutplan(self, cutlist: CutList):
         """
@@ -527,8 +531,9 @@ class HTMLFormat(Format):
         trs = ''.join(tr_rows)
         return f'<h2>Material Summary</h2><table><thead>{header}</thead><tbody>{trs}</tbody></table>'
 
-    def _cut_visualization_html(self, plan) -> str:
+    def _cut_visualization_html(self, plan, items) -> str:
         """Render an SVG cut diagram for a lumber Plan."""
+        from .optimizer import SHEET_GOODS_MAX_HEIGHT_IN
         # Assign a consistent color to each unique part length so the same
         # dimension is always the same color across all boards.
         PALETTE = [
@@ -539,6 +544,16 @@ class HTMLFormat(Format):
             {p for board in plan.boards for p in board.parts}, reverse=True)
         color_map = {l: PALETTE[i % len(PALETTE)]
                      for i, l in enumerate(unique_lengths)}
+
+        # Map rounded length → part name for tooltips and legend
+        length_to_name = {}
+        for item in items:
+            if item.dimensions.height * CM_TO_IN <= SHEET_GOODS_MAX_HEIGHT_IN:
+                continue
+            l_in = round(item.dimensions.length * CM_TO_IN, 1)
+            names = self.format_item_names(item)
+            if names:
+                length_to_name[l_in] = names[0]
 
         BAR_H    = 34   # height of each colored bar
         ROW_H    = 48   # row height including vertical gap
@@ -565,7 +580,10 @@ class HTMLFormat(Format):
                 # here ensures the bar fills exactly to the stock length.
                 seg_w = ((part + plan.kerf) / plan.stock_length) * CONTENT_W
                 color = color_map[part]
-                tip = html.escape(f'{part:.1f} in')
+                name = length_to_name.get(round(part, 1), '')
+                tip = html.escape(
+                    f'{name}: {part:.1f} in' if name else f'{part:.1f} in'
+                )
                 elems.append(
                     f'<rect x="{x:.2f}" y="{bar_y}" '
                     f'width="{max(seg_w, 1):.2f}" height="{BAR_H}" '
@@ -612,12 +630,16 @@ class HTMLFormat(Format):
         swatch = ('display:inline-block;width:14px;height:14px;'
                   'border-radius:2px;margin-right:4px;vertical-align:middle;')
         item_style = 'display:inline-flex;align-items:center;margin-right:14px;font-size:12px;'
-        legend_parts = [
-            f'<span style="{item_style}">'
-            f'<span style="{swatch}background:{color_map[l]};"></span>'
-            f'{l:.1f}&quot;</span>'
-            for l in sorted(color_map, reverse=True)
-        ]
+        legend_parts = []
+        for l in sorted(color_map, reverse=True):
+            name = length_to_name.get(round(l, 1), '')
+            label = (f'{html.escape(name)} ({l:.1f}&quot;)' if name
+                     else f'{l:.1f}&quot;')
+            legend_parts.append(
+                f'<span style="{item_style}">'
+                f'<span style="{swatch}background:{color_map[l]};"></span>'
+                f'{label}</span>'
+            )
         legend_parts.append(
             f'<span style="{item_style}">'
             f'<span style="{swatch}background:#e0e0e0;"></span>'
@@ -659,8 +681,9 @@ class HTMLFormat(Format):
                 pw = part.width * scale
                 ph = part.height * scale
                 color = color_map.get(part.label, '#ccc')
+                rot_note = ' (rotated)' if part.rotated else ''
                 tip = html.escape(
-                    f'{part.label} in' + (' (rotated)' if part.rotated else '')
+                    f'{part.label}: {part.width:.1f}×{part.height:.1f} in{rot_note}'
                 )
                 elems.append(
                     f'<rect x="{px:.2f}" y="{py:.2f}" '
@@ -670,8 +693,18 @@ class HTMLFormat(Format):
                     f'<title>{tip}</title></rect>'
                 )
                 if pw >= 40 and ph >= 16:
+                    # Show name on first line, dimensions on second if room
+                    label_y = py + ph / 2
+                    if ph >= 30:
+                        label_y = py + ph / 2 - 6
+                        elems.append(
+                            f'<text x="{px + pw / 2:.2f}" y="{label_y + 14:.2f}" '
+                            f'text-anchor="middle" dominant-baseline="middle" '
+                            f'font-size="9" fill="#fff" fill-opacity="0.8">'
+                            f'{part.width:.1f}&times;{part.height:.1f}</text>'
+                        )
                     elems.append(
-                        f'<text x="{px + pw / 2:.2f}" y="{py + ph / 2:.2f}" '
+                        f'<text x="{px + pw / 2:.2f}" y="{label_y:.2f}" '
                         f'text-anchor="middle" dominant-baseline="middle" '
                         f'font-size="10" fill="#fff" font-weight="bold">'
                         f'{html.escape(part.label)}</text>'
@@ -719,7 +752,7 @@ class HTMLFormat(Format):
 
         plan = self._run_optimizer(items)
         cutplan_html = format_plan_html(plan) if plan is not None else ''
-        diagram_html = self._cut_visualization_html(plan) if plan is not None else ''
+        diagram_html = self._cut_visualization_html(plan, items) if plan is not None else ''
 
         sheet_plan = self._run_sheet_optimizer(items)
         sheet_stats_html = format_sheet_plan_html(sheet_plan) if sheet_plan is not None else ''

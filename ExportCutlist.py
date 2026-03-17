@@ -166,6 +166,12 @@ class CutlistCommandCreatedEventHandler(adsk.core.CommandCreatedEventHandler):
             'sheet_size', 'Sheet size (in)', user_options.format_options.sheet_size)
         sheet_size_input.tooltip = 'Sheet dimensions in inches, e.g. 48x96 for 4×8 plywood. Leave blank to skip.'
 
+        respect_grain_input = optimizer_group.children.addBoolValueInput(
+            'respect_grain', 'Respect grain direction', True, '',
+            user_options.format_options.respect_grain)
+        respect_grain_input.tooltip = 'If checked, sheet goods will not be rotated.'
+        respect_grain_input.tooltipDescription = 'Enable when grain direction matters, e.g. face-grain plywood panels.'
+
         execute_handler = CutlistCommandExecuteHandler()
         cmd.execute.add(execute_handler)
         handlers.append(execute_handler)
@@ -258,6 +264,7 @@ def set_options_from_inputs(inputs: adsk.core.CommandInputs):
     kerf_input: adsk.core.ValueCommandInput = inputs.itemById('kerf')
     min_offcut_input: adsk.core.ValueCommandInput = inputs.itemById('min_offcut')
     sheet_size_input: adsk.core.StringValueCommandInput = inputs.itemById('sheet_size')
+    respect_grain_input: adsk.core.BoolValueCommandInput = inputs.itemById('respect_grain')
 
     user_options.cutlist_options.ignore_hidden = hidden_input.value
     user_options.cutlist_options.ignore_external = external_input.value
@@ -276,6 +283,7 @@ def set_options_from_inputs(inputs: adsk.core.CommandInputs):
     user_options.format_options.kerf_in = kerf_input.value * CM_TO_IN
     user_options.format_options.min_offcut_in = min_offcut_input.value * CM_TO_IN
     user_options.format_options.sheet_size = sheet_size_input.value
+    user_options.format_options.respect_grain = respect_grain_input.value
 
 
 @report_errors
