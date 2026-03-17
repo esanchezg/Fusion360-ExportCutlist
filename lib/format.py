@@ -496,6 +496,109 @@ class HTMLFormat(Format):
         trs = ''.join(tr_rows)
         return f'<h2>Material Summary</h2><table><thead>{header}</thead><tbody>{trs}</tbody></table>'
 
+    def _cut_visualization_html(self, plan) -> str:
+        """Render an SVG cut diagram for a lumber Plan."""
+        # Assign a consistent color to each unique part length so the same
+        # dimension is always the same color across all boards.
+        PALETTE = [
+            '#5b9bd5', '#ed7d31', '#70ad47', '#ffc000',
+            '#4472c4', '#c55a11', '#548235', '#7030a0',
+        ]
+        unique_lengths = sorted(
+            {p for board in plan.boards for p in board.parts}, reverse=True)
+        color_map = {l: PALETTE[i % len(PALETTE)]
+                     for i, l in enumerate(unique_lengths)}
+
+        BAR_H    = 34   # height of each colored bar
+        ROW_H    = 48   # row height including vertical gap
+        LABEL_W  = 72   # pixels reserved for the "Board N" label
+        CONTENT_W = 740 # pixels for the actual bar area
+        RIGHT_PAD = 20
+        SVG_W = LABEL_W + CONTENT_W + RIGHT_PAD
+        SVG_H = len(plan.boards) * ROW_H + 16
+
+        elems = []
+        for i, board in enumerate(plan.boards):
+            bar_y = i * ROW_H + 7
+
+            # Board label
+            elems.append(
+                f'<text x="{LABEL_W - 6}" y="{bar_y + BAR_H // 2 + 4}" '
+                f'text-anchor="end" font-size="12" fill="#444">'
+                f'Board {i + 1}</text>'
+            )
+
+            x = float(LABEL_W)
+            for part in board.parts:
+                # Each part consumes part_length + kerf of stock; using that
+                # here ensures the bar fills exactly to the stock length.
+                seg_w = ((part + plan.kerf) / plan.stock_length) * CONTENT_W
+                color = color_map[part]
+                tip = html.escape(f'{part:.1f} in')
+                elems.append(
+                    f'<rect x="{x:.2f}" y="{bar_y}" '
+                    f'width="{max(seg_w, 1):.2f}" height="{BAR_H}" '
+                    f'fill="{color}" stroke="#fff" stroke-width="1.5">'
+                    f'<title>{tip}</title></rect>'
+                )
+                if seg_w >= 36:
+                    elems.append(
+                        f'<text x="{x + seg_w / 2:.2f}" '
+                        f'y="{bar_y + BAR_H // 2 + 4}" '
+                        f'text-anchor="middle" font-size="11" '
+                        f'fill="#fff" font-weight="bold">'
+                        f'{part:.1f}&quot;</text>'
+                    )
+                x += seg_w
+
+            # Waste segment
+            waste_w = (board.waste / plan.stock_length) * CONTENT_W
+            if waste_w >= 1:
+                tip = html.escape(f'waste: {board.waste:.1f} in')
+                elems.append(
+                    f'<rect x="{x:.2f}" y="{bar_y}" '
+                    f'width="{waste_w:.2f}" height="{BAR_H}" '
+                    f'fill="#e0e0e0" stroke="#fff" stroke-width="1.5">'
+                    f'<title>{tip}</title></rect>'
+                )
+                if waste_w >= 32:
+                    elems.append(
+                        f'<text x="{x + waste_w / 2:.2f}" '
+                        f'y="{bar_y + BAR_H // 2 + 4}" '
+                        f'text-anchor="middle" font-size="10" fill="#999">'
+                        f'{board.waste:.1f}&quot;</text>'
+                    )
+
+        svg = (
+            f'<svg width="{SVG_W}" height="{SVG_H}" '
+            f'font-family="sans-serif" '
+            f'xmlns="http://www.w3.org/2000/svg">\n  '
+            + '\n  '.join(elems)
+            + '\n</svg>'
+        )
+
+        # Legend: one swatch per unique part length + waste
+        swatch = ('display:inline-block;width:14px;height:14px;'
+                  'border-radius:2px;margin-right:4px;vertical-align:middle;')
+        item_style = 'display:inline-flex;align-items:center;margin-right:14px;font-size:12px;'
+        legend_parts = [
+            f'<span style="{item_style}">'
+            f'<span style="{swatch}background:{color_map[l]};"></span>'
+            f'{l:.1f}&quot;</span>'
+            for l in sorted(color_map, reverse=True)
+        ]
+        legend_parts.append(
+            f'<span style="{item_style}">'
+            f'<span style="{swatch}background:#e0e0e0;"></span>'
+            f'waste</span>'
+        )
+        legend = f'<p style="margin-top:6px;">{"".join(legend_parts)}</p>'
+
+        sheet_note = ('<p><em>Sheet goods are not included in the cut diagram.</em></p>'
+                      if plan.sheet_goods_skipped else '')
+
+        return f'<h2>Cut Diagram</h2>{svg}{legend}{sheet_note}'
+
     def format(self, cutlist: CutList):
         from .optimizer import format_plan_html
         items = cutlist.sorted_items()
@@ -506,6 +609,7 @@ class HTMLFormat(Format):
 
         plan = self._run_optimizer(items)
         cutplan_html = format_plan_html(plan) if plan is not None else ''
+        diagram_html = self._cut_visualization_html(plan) if plan is not None else ''
 
         return textwrap.dedent(f'''\
             <html>
@@ -532,6 +636,7 @@ class HTMLFormat(Format):
                 </table>
                 {summary_html}
                 {cutplan_html}
+                {diagram_html}
             </body>
         ''')
 
