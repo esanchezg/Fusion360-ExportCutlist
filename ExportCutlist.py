@@ -162,6 +162,10 @@ class CutlistCommandCreatedEventHandler(adsk.core.CommandCreatedEventHandler):
             adsk.core.ValueInput.createByReal(user_options.format_options.min_offcut_in / CM_TO_IN))
         min_offcut_input.tooltip = 'Off-cuts shorter than this are counted as waste.'
 
+        sheet_size_input = optimizer_group.children.addStringValueInput(
+            'sheet_size', 'Sheet size (in)', user_options.format_options.sheet_size)
+        sheet_size_input.tooltip = 'Sheet dimensions in inches, e.g. 48x96 for 4×8 plywood. Leave blank to skip.'
+
         execute_handler = CutlistCommandExecuteHandler()
         cmd.execute.add(execute_handler)
         handlers.append(execute_handler)
@@ -253,6 +257,7 @@ def set_options_from_inputs(inputs: adsk.core.CommandInputs):
     stock_lengths_input: adsk.core.StringValueCommandInput = inputs.itemById('stock_lengths')
     kerf_input: adsk.core.ValueCommandInput = inputs.itemById('kerf')
     min_offcut_input: adsk.core.ValueCommandInput = inputs.itemById('min_offcut')
+    sheet_size_input: adsk.core.StringValueCommandInput = inputs.itemById('sheet_size')
 
     user_options.cutlist_options.ignore_hidden = hidden_input.value
     user_options.cutlist_options.ignore_external = external_input.value
@@ -270,6 +275,7 @@ def set_options_from_inputs(inputs: adsk.core.CommandInputs):
     user_options.format_options.stock_lengths = stock_lengths_input.value
     user_options.format_options.kerf_in = kerf_input.value * CM_TO_IN
     user_options.format_options.min_offcut_in = min_offcut_input.value * CM_TO_IN
+    user_options.format_options.sheet_size = sheet_size_input.value
 
 
 @report_errors

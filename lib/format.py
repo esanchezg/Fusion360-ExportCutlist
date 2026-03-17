@@ -45,6 +45,7 @@ class FormatOptions:
     stock_lengths: str = ''
     kerf_in: float = 0.125
     min_offcut_in: float = 12.0
+    sheet_size: str = ''
 
 
 class FileFilter:
@@ -130,6 +131,31 @@ class Format:
                         self.options.kerf_in, self.options.min_offcut_in)
         plan.sheet_goods_skipped = skipped
         return plan
+
+    def _run_sheet_optimizer(self, items):
+        """
+        Filter sheet goods from items and run the 2D sheet optimizer.
+
+        Returns a SheetPlan, or None if sheet_size is not configured or no
+        sheet goods exist in the item list.
+        """
+        from .sheet_optimizer import parse_sheet_size, optimize_sheets
+        from .optimizer import SHEET_GOODS_MAX_HEIGHT_IN
+        sheet_size = parse_sheet_size(self.options.sheet_size)
+        if sheet_size is None:
+            return None
+        sheet_width, sheet_height = sheet_size
+        parts = []
+        for item in items:
+            if item.dimensions.height * CM_TO_IN > SHEET_GOODS_MAX_HEIGHT_IN:
+                continue
+            l_in = item.dimensions.length * CM_TO_IN
+            w_in = item.dimensions.width * CM_TO_IN
+            label = f'{l_in:.1f}x{w_in:.1f}'
+            parts.extend([(l_in, w_in, label)] * item.count)
+        if not parts:
+            return None
+        return optimize_sheets(parts, sheet_width, sheet_height)
 
     def format_cutplan(self, cutlist: CutList):
         """
@@ -429,6 +455,11 @@ class TableFormat(Format):
         if plan is not None:
             output += '\n\n' + format_plan_text(plan)
 
+        from .sheet_optimizer import format_sheet_plan_text
+        sheet_plan = self._run_sheet_optimizer(items)
+        if sheet_plan is not None:
+            output += '\n\n' + format_sheet_plan_text(sheet_plan)
+
         return output
 
 
@@ -599,8 +630,87 @@ class HTMLFormat(Format):
 
         return f'<h2>Cut Diagram</h2>{svg}{legend}{sheet_note}'
 
+    def _sheet_visualization_html(self, plan) -> str:
+        """Render SVG cut diagrams, one per sheet, for a SheetPlan."""
+        PALETTE = [
+            '#5b9bd5', '#ed7d31', '#70ad47', '#ffc000',
+            '#4472c4', '#c55a11', '#548235', '#7030a0',
+            '#2e75b6', '#c00000', '#00b050', '#7f7f7f',
+        ]
+        unique_labels = sorted({p.label for s in plan.sheets for p in s.placed})
+        color_map = {l: PALETTE[i % len(PALETTE)] for i, l in enumerate(unique_labels)}
+
+        # Scale to fit within display bounds while preserving aspect ratio
+        DISP_W, DISP_H = 400, 600
+        scale = min(DISP_W / plan.sheet_width, DISP_H / plan.sheet_height)
+        svg_w = int(plan.sheet_width * scale)
+        svg_h = int(plan.sheet_height * scale)
+
+        sheet_divs = []
+        for i, sheet in enumerate(plan.sheets, 1):
+            elems = []
+            elems.append(
+                f'<rect width="{svg_w}" height="{svg_h}" '
+                f'fill="#f8f8f8" stroke="#555" stroke-width="1.5"/>'
+            )
+            for part in sheet.placed:
+                px = part.x * scale
+                py = part.y * scale
+                pw = part.width * scale
+                ph = part.height * scale
+                color = color_map.get(part.label, '#ccc')
+                tip = html.escape(
+                    f'{part.label} in' + (' (rotated)' if part.rotated else '')
+                )
+                elems.append(
+                    f'<rect x="{px:.2f}" y="{py:.2f}" '
+                    f'width="{pw:.2f}" height="{ph:.2f}" '
+                    f'fill="{color}" fill-opacity="0.82" '
+                    f'stroke="#fff" stroke-width="1">'
+                    f'<title>{tip}</title></rect>'
+                )
+                if pw >= 40 and ph >= 16:
+                    elems.append(
+                        f'<text x="{px + pw / 2:.2f}" y="{py + ph / 2:.2f}" '
+                        f'text-anchor="middle" dominant-baseline="middle" '
+                        f'font-size="10" fill="#fff" font-weight="bold">'
+                        f'{html.escape(part.label)}</text>'
+                    )
+
+            svg = (
+                f'<svg width="{svg_w}" height="{svg_h}" font-family="sans-serif" '
+                f'xmlns="http://www.w3.org/2000/svg">'
+                + ''.join(elems)
+                + '</svg>'
+            )
+            title = f'Sheet {i} &mdash; {sheet.waste_pct:.1f}% waste'
+            sheet_divs.append(
+                f'<div style="display:inline-block;margin:8px;'
+                f'vertical-align:top;text-align:center;">'
+                f'<p style="font-size:12px;margin:0 0 4px;">{title}</p>'
+                f'{svg}</div>'
+            )
+
+        swatch = ('display:inline-block;width:14px;height:14px;'
+                  'border-radius:2px;margin-right:4px;vertical-align:middle;')
+        item_style = 'display:inline-flex;align-items:center;margin-right:14px;font-size:12px;'
+        legend_parts = [
+            f'<span style="{item_style}">'
+            f'<span style="{swatch}background:{color_map[l]};"></span>'
+            f'{html.escape(l)} in</span>'
+            for l in sorted(color_map)
+        ]
+        legend = f'<p style="margin-top:8px;">{"".join(legend_parts)}</p>'
+
+        return (
+            f'<h2>Sheet Cut Diagram</h2>'
+            f'<div>{"".join(sheet_divs)}</div>'
+            f'{legend}'
+        )
+
     def format(self, cutlist: CutList):
         from .optimizer import format_plan_html
+        from .sheet_optimizer import format_sheet_plan_html
         items = cutlist.sorted_items()
         title = html.escape(self.docname)
         header = ''.join(f'<th>{html.escape(h)}</th>' for h in self.fieldnames)
@@ -610,6 +720,10 @@ class HTMLFormat(Format):
         plan = self._run_optimizer(items)
         cutplan_html = format_plan_html(plan) if plan is not None else ''
         diagram_html = self._cut_visualization_html(plan) if plan is not None else ''
+
+        sheet_plan = self._run_sheet_optimizer(items)
+        sheet_stats_html = format_sheet_plan_html(sheet_plan) if sheet_plan is not None else ''
+        sheet_viz_html = self._sheet_visualization_html(sheet_plan) if sheet_plan is not None else ''
 
         return textwrap.dedent(f'''\
             <html>
@@ -637,6 +751,8 @@ class HTMLFormat(Format):
                 {summary_html}
                 {cutplan_html}
                 {diagram_html}
+                {sheet_stats_html}
+                {sheet_viz_html}
             </body>
         ''')
 
