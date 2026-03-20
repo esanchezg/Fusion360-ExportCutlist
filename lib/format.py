@@ -47,6 +47,7 @@ class FormatOptions:
     min_offcut_in: float = 12.0
     sheet_size: str = ''
     respect_grain: bool = False
+    sheet_thickness_in: float = 0.75
 
 
 class FileFilter:
@@ -110,16 +111,16 @@ class Format:
         Sheet goods (height <= 0.75 in) are skipped. Returns a Plan, or None
         if stock_lengths is not configured or no lumber parts exist.
         """
-        from .optimizer import (parse_stock_lengths, optimize,
-                                 SHEET_GOODS_MAX_HEIGHT_IN)
+        from .optimizer import parse_stock_lengths, optimize
         stock_lengths = parse_stock_lengths(self.options.stock_lengths)
         if not stock_lengths:
             return None
 
+        threshold = self.options.sheet_thickness_in
         parts = []
         skipped = False
         for item in items:
-            if item.dimensions.height * CM_TO_IN <= SHEET_GOODS_MAX_HEIGHT_IN:
+            if item.dimensions.height * CM_TO_IN <= threshold:
                 skipped = True
                 continue
             length_in = item.dimensions.length * CM_TO_IN
@@ -141,14 +142,14 @@ class Format:
         sheet goods exist in the item list.
         """
         from .sheet_optimizer import parse_sheet_size, optimize_sheets
-        from .optimizer import SHEET_GOODS_MAX_HEIGHT_IN
         sheet_size = parse_sheet_size(self.options.sheet_size)
         if sheet_size is None:
             return None
+        threshold = self.options.sheet_thickness_in
         sheet_width, sheet_height = sheet_size
         parts = []
         for item in items:
-            if item.dimensions.height * CM_TO_IN > SHEET_GOODS_MAX_HEIGHT_IN:
+            if item.dimensions.height * CM_TO_IN > threshold:
                 continue
             l_in = item.dimensions.length * CM_TO_IN
             w_in = item.dimensions.width * CM_TO_IN
@@ -533,7 +534,6 @@ class HTMLFormat(Format):
 
     def _cut_visualization_html(self, plan, items) -> str:
         """Render an SVG cut diagram for a lumber Plan."""
-        from .optimizer import SHEET_GOODS_MAX_HEIGHT_IN
         # Assign a consistent color to each unique part length so the same
         # dimension is always the same color across all boards.
         PALETTE = [
@@ -546,9 +546,10 @@ class HTMLFormat(Format):
                      for i, l in enumerate(unique_lengths)}
 
         # Map rounded length → part name for tooltips and legend
+        threshold = self.options.sheet_thickness_in
         length_to_name = {}
         for item in items:
-            if item.dimensions.height * CM_TO_IN <= SHEET_GOODS_MAX_HEIGHT_IN:
+            if item.dimensions.height * CM_TO_IN <= threshold:
                 continue
             l_in = round(item.dimensions.length * CM_TO_IN, 1)
             names = self.format_item_names(item)

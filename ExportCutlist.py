@@ -166,6 +166,13 @@ class CutlistCommandCreatedEventHandler(adsk.core.CommandCreatedEventHandler):
             'sheet_size', 'Sheet size (in)', user_options.format_options.sheet_size)
         sheet_size_input.tooltip = 'Sheet dimensions in inches, e.g. 48x96 for 4×8 plywood. Leave blank to skip.'
 
+        sheet_thickness_input = optimizer_group.children.addValueInput(
+            'sheet_thickness', 'Sheet goods max thickness', 'in',
+            adsk.core.ValueInput.createByReal(
+                user_options.format_options.sheet_thickness_in / CM_TO_IN))
+        sheet_thickness_input.tooltip = 'Parts thinner than this are treated as sheet goods.'
+        sheet_thickness_input.tooltipDescription = 'Default 0.75" (3/4 ply). Lower this if thin solid stock like T&G is being misclassified.'
+
         respect_grain_input = optimizer_group.children.addBoolValueInput(
             'respect_grain', 'Respect grain direction', True, '',
             user_options.format_options.respect_grain)
@@ -264,6 +271,7 @@ def set_options_from_inputs(inputs: adsk.core.CommandInputs):
     kerf_input: adsk.core.ValueCommandInput = inputs.itemById('kerf')
     min_offcut_input: adsk.core.ValueCommandInput = inputs.itemById('min_offcut')
     sheet_size_input: adsk.core.StringValueCommandInput = inputs.itemById('sheet_size')
+    sheet_thickness_input: adsk.core.ValueCommandInput = inputs.itemById('sheet_thickness')
     respect_grain_input: adsk.core.BoolValueCommandInput = inputs.itemById('respect_grain')
 
     user_options.cutlist_options.ignore_hidden = hidden_input.value
@@ -283,6 +291,7 @@ def set_options_from_inputs(inputs: adsk.core.CommandInputs):
     user_options.format_options.kerf_in = kerf_input.value * CM_TO_IN
     user_options.format_options.min_offcut_in = min_offcut_input.value * CM_TO_IN
     user_options.format_options.sheet_size = sheet_size_input.value
+    user_options.format_options.sheet_thickness_in = sheet_thickness_input.value * CM_TO_IN
     user_options.format_options.respect_grain = respect_grain_input.value
 
 
